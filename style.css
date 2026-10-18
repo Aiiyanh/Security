@@ -1,0 +1,70 @@
+:root{--bg:#eef1f4;--card:#fff;--ink:#14212b;--mut:#5b6b78;--line:#d5dce2;--navy:#12344d;--blue:#1d6fe0;--ok:#1f9d55;--bad:#d64545;color-scheme:light dark}
+@media(prefers-color-scheme:dark){:root{--bg:#0f161c;--card:#18222b;--ink:#e8eef3;--mut:#93a3b0;--line:#2b3946;--navy:#0a2233;--blue:#5aa2ff;--ok:#3ccf7d;--bad:#ff7a7a}}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{-webkit-text-size-adjust:100%;text-size-adjust:100%}
+body{margin:0;font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;background:var(--bg);color:var(--ink);
+  padding-left:env(safe-area-inset-left);padding-right:env(safe-area-inset-right);padding-bottom:env(safe-area-inset-bottom)}
+
+/* header (clears the iPhone notch / status bar) */
+header{background:var(--navy);color:#fff;padding:calc(10px + env(safe-area-inset-top)) 16px 10px;display:flex;justify-content:space-between;align-items:center;gap:10px;position:sticky;top:0;z-index:1000}
+header b{font-size:18px;white-space:nowrap}
+header .row{flex-wrap:nowrap;min-width:0}
+#who{color:#cfe;font-size:13px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:45vw}
+
+main{max-width:1200px;margin:0 auto;padding:14px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+h2{margin:0 0 10px;font-size:17px}
+
+/* touch-friendly controls: 48px tall, 16px text so iOS does not zoom */
+input{width:100%;min-height:48px;padding:11px 12px;margin:6px 0;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font-size:16px}
+button{min-height:48px;padding:11px 18px;border:0;border-radius:10px;background:var(--blue);color:#fff;font-size:16px;font-weight:600;cursor:pointer;touch-action:manipulation}
+button:active{filter:brightness(.9)}
+button:disabled{opacity:.6}
+button.ok{background:var(--ok)}button.bad{background:var(--bad)}
+button.ghost{background:transparent;color:#fff;border:1px solid #ffffff88;min-height:40px;padding:6px 14px}
+button:focus-visible,input:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.mut{color:var(--mut);font-size:14px}
+.hide{display:none!important}
+#err{color:var(--bad);min-height:20px;font-size:14px}
+.login{max-width:420px;margin:6vh auto}
+
+/* maps: height follows the screen, never taller than the viewport */
+.map{width:100%;border-radius:10px;border:1px solid var(--line);height:clamp(280px,48vh,560px);height:clamp(280px,48dvh,560px)}
+.map.tall{height:clamp(320px,58vh,680px);height:clamp(320px,58dvh,680px)}
+
+/* layout: phone = 1 column, tablet = list + map, desktop = wider list */
+.grid{display:grid;grid-template-columns:1fr;gap:14px}
+@media(min-width:700px){.grid{grid-template-columns:300px 1fr;align-items:start}}
+@media(min-width:1100px){.grid{grid-template-columns:340px 1fr}}
+
+/* guard buttons */
+.actions{display:flex;gap:10px;flex-wrap:wrap}
+.actions button{flex:1 1 180px;min-height:56px;font-size:17px}
+
+.item{padding:12px;border:1px solid var(--line);border-radius:10px;margin-bottom:8px;cursor:pointer;min-height:56px}
+.item.sel{border-color:var(--blue);background:color-mix(in srgb,var(--blue) 12%,transparent)}
+.dot{display:inline-block;width:10px;height:10px;border-radius:50%;margin-right:6px;background:var(--mut)}
+.dot.on{background:var(--ok)}
+
+/* notifications: top-right on tablet/desktop, full width on phones */
+#toasts{position:fixed;right:12px;top:calc(64px + env(safe-area-inset-top));z-index:2000;display:flex;flex-direction:column;gap:8px;max-width:320px}
+@media(max-width:600px){#toasts{left:12px;right:12px;max-width:none}}
+.toast{background:var(--navy);color:#fff;padding:12px 14px;border-radius:10px;box-shadow:0 4px 14px #0005}
+
+.thumbs{display:flex;gap:8px;overflow-x:auto;padding-bottom:6px;-webkit-overflow-scrolling:touch}
+.thumbs img{height:100px;border-radius:8px;cursor:pointer;flex:0 0 auto}
+.pop img{width:min(220px,60vw);border-radius:6px}
+
+.warn{background:color-mix(in srgb,var(--bad) 14%,transparent);border:1px solid var(--bad);border-radius:10px;padding:12px;margin-bottom:10px}
+
+.me-dot{width:18px;height:18px;border-radius:50%;background:#1d6fe0;border:3px solid #fff;box-shadow:0 0 0 0 rgba(29,111,224,.6);animation:pulse 2s infinite}
+@keyframes pulse{70%{box-shadow:0 0 0 14px rgba(29,111,224,0)}100%{box-shadow:0 0 0 0 rgba(29,111,224,0)}}
+@media(prefers-reduced-motion:reduce){.me-dot{animation:none}}
+
+/* bigger map buttons for fingers */
+.leaflet-touch .leaflet-bar a{width:40px;height:40px;line-height:40px}
+
+/* small phones */
+@media(max-width:380px){main{padding:10px}.card{padding:12px}header b{font-size:16px}}
+.login button{width:100%}

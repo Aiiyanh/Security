@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#12344d">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<title>Guard Patrol</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header><b>Guard Patrol</b><div class="row"><span id="who"></span><button id="out" class="ghost hide">Sign out</button></div></header>
+<div id="toasts"></div>
+<main>
+
+<!-- LOGIN -->
+<section id="login" class="card login">
+  <h2>Sign in</h2>
+  <input id="email" type="email" placeholder="Email">
+  <input id="pass" type="password" placeholder="Password (6+ characters)">
+  <div id="err"></div>
+  <div class="row"><button id="bin">Sign in</button></div>
+</section>
+
+<!-- GUARD -->
+<section id="guard" class="hide">
+  <div class="card">
+    <h2>My duty</h2>
+    <div id="locwarn" class="warn hide"></div>
+    <p id="gstatus" class="mut">You are off duty.</p>
+    <div class="actions">
+      <button id="start" class="ok">Start duty</button>
+      <button id="snap" class="hide">Take patrol photo</button>
+      <button id="end" class="bad hide">End duty</button>
+    </div>
+    <input id="file" type="file" accept="image/*" capture="environment" class="hide">
+    <p id="gmsg" class="mut"></p>
+  </div>
+  <div class="card"><h2>My route</h2><div id="gmap" class="map"></div></div>
+</section>
+
+<!-- ADMIN -->
+<section id="admin" class="hide">
+  <div class="grid">
+    <div>
+      <div class="card"><h2>On duty now</h2><div id="active"><span class="mut">No guards on duty.</span></div></div>
+      <div class="card"><h2>Recent shifts</h2><div id="recent"></div></div>
+    </div>
+    <div>
+      <div class="card"><h2 id="mtitle">Select a shift to see the route</h2><div id="amap" class="map tall"></div></div>
+      <div class="card"><h2>Photos</h2><div id="thumbs" class="thumbs"><span class="mut">No photos.</span></div></div>
+    </div>
+  </div>
+</section>
+</main>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-app-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-auth-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/firebase/10.12.2/firebase-firestore-compat.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
