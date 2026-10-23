@@ -76,3 +76,8 @@ button:focus-visible,input:focus-visible{outline:3px solid var(--blue);outline-o
 .zoomable{cursor:zoom-in}
 .viewer{position:fixed;inset:0;background:#000e;z-index:3000;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:12px;padding:12px}
 .viewer img{max-width:100%;max-height:calc(100vh - 100px);max-height:calc(100dvh - 100px);object-fit:contain;border-radius:8px}
+#admin.gv .leftcol{display:none}
+#admin.gv .grid{grid-template-columns:1fr}
+#admin:not(.gv) #backbar{display:none}
+select{width:100%;min-height:48px;padding:10px;margin:6px 0;border:1px solid var(--line);border-radius:10px;background:var(--bg);color:var(--ink);font-size:16px}
+.item .go{float:right;color:var(--blue);font-weight:600}
