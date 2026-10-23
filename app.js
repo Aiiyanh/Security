@@ -284,6 +284,7 @@ $('file').onchange = async e => {
 };
 
 /* ---------- ADMIN ---------- */
+let allShifts = [], gvGuard = null, selStatus = null;
 let amap, layer, sel = null, selUnsubs = [], booted = false;
 function toast(t) {
   const d = document.createElement('div'); d.className = 'toast'; d.textContent = t; $('toasts').appendChild(d);
@@ -304,17 +305,51 @@ function initAdmin() {
     s.docChanges().forEach(c => { if (c.type === 'added' && c.doc.data().at) toast(c.doc.data().guard + ' ' + c.doc.data().text); });
   }));
   unsubs.push(db.collection('shifts').orderBy('start', 'desc').limit(30).onSnapshot(s => {
+    allShifts = s.docs.map(d => ({ id: d.id, ...d.data() }));
     const act = $('active'), rec = $('recent'); act.innerHTML = ''; rec.innerHTML = '';
-    s.forEach(d => {
-      const v = d.data(), on = v.status === 'active';
-      const el = document.createElement('div'); el.className = 'item' + (d.id === sel ? ' sel' : '');
-      el.innerHTML = `<span class="dot ${on ? 'on' : ''}"></span><b>${v.guardName}</b><div class="mut">${fmt(v.start)}${on ? ' · on duty' : ' → ' + fmt(v.end)}</div>`;
-      el.onclick = () => select(d.id, v);
+    allShifts.forEach(v => {
+      const on = v.status === 'active';
+      const el = document.createElement('div'); el.className = 'item' + (v.id === sel ? ' sel' : '');
+      el.innerHTML = `<span class="go">View ›</span><span class="dot ${on ? 'on' : ''}"></span><b>${esc(v.guardName)}</b><div class="mut">${fmt(v.start)}${on ? ' · on duty' : ' → ' + fmt(v.end)}</div>`;
+      el.onclick = () => openGuard(v.guardId, v.id);
       (on ? act : rec).appendChild(el);
     });
     if (!act.children.length) act.innerHTML = '<span class="mut">No guards on duty.</span>';
+    if ($('admin').classList.contains('gv')) {
+      refreshGvSelect();
+      const cur = allShifts.find(x => x.id === sel);
+      if (cur) { updateGvHeader(cur); if (cur.status !== selStatus) select(cur.id, cur); }
+    }
   }));
 }
+
+/* ---------- GUARD VIEW (admin picks a guard) ---------- */
+function updateGvHeader(v) {
+  $('gvname').textContent = v.guardName;
+  $('gvstat').textContent = v.status === 'active' ? '🟢 On duty' : '⚪ Shift ended';
+}
+function refreshGvSelect() {
+  const list = allShifts.filter(x => x.guardId === gvGuard), sl = $('gvshift');
+  sl.innerHTML = '';
+  list.forEach(x => { const o = document.createElement('option'); o.value = x.id; o.textContent = fmt(x.start) + (x.status === 'active' ? '  ·  ON DUTY' : ''); sl.appendChild(o); });
+  if (sel) sl.value = sel;
+}
+function openGuard(guardId, shiftId) {
+  const v = allShifts.find(x => x.id === shiftId); if (!v) return;
+  gvGuard = guardId; $('admin').classList.add('gv');
+  refreshGvSelect(); updateGvHeader(v); select(shiftId, v);
+  window.scrollTo(0, 0); setTimeout(() => amap.invalidateSize(), 150);
+}
+function closeGuard() {
+  $('admin').classList.remove('gv'); gvGuard = null;
+  selUnsubs.forEach(f => f()); selUnsubs = []; sel = null; selStatus = null; selDone = {}; selPhotos = {};
+  layer.clearLayers(); drawCps(acpLayer, selDone); renderProgress();
+  $('mtitle').textContent = 'Select a shift to see the route'; $('thumbs').innerHTML = '<span class="mut">None.</span>';
+  document.querySelectorAll('.item.sel').forEach(e => e.classList.remove('sel'));
+  window.scrollTo(0, 0); setTimeout(() => amap.invalidateSize(), 150);
+}
+$('gvback').onclick = closeGuard;
+$('gvshift').onchange = e => { const v = allShifts.find(x => x.id === e.target.value); if (v) { updateGvHeader(v); select(v.id, v); } };
 function renderProgress() {
   const b = $('progress');
   if (!sel) { b.innerHTML = '<span class="mut">Select a shift to see which checkpoints were visited.</span>'; return; }
@@ -364,13 +399,13 @@ $('cpgps').onclick = async () => {
 };
 
 function select(id, v) {
-  sel = id; selDone = {}; selPhotos = {}; selUnsubs.forEach(f => f()); selUnsubs = [];
-  if (window.innerWidth < 700) $('amap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  sel = id; selStatus = v.status; selDone = {}; selPhotos = {}; selUnsubs.forEach(f => f()); selUnsubs = [];
   $('mtitle').textContent = v.guardName + ' — ' + fmt(v.start);
   document.querySelectorAll('.item').forEach(e => e.classList.remove('sel'));
   let pts = [], photos = [];
   const draw = () => {
     layer.clearLayers();
+    $('gvsum').textContent = 'Started ' + fmt(v.start) + (v.end ? '  ·  Ended ' + fmt(v.end) : '') + (pts.length ? '  ·  Last location ' + fmt(pts[pts.length - 1].at) : '');
     if (pts.length) {
       const ll = pts.map(p => [p.lat, p.lng]);
       L.polyline(ll, { color: '#1d6fe0', weight: 5 }).addTo(layer);
