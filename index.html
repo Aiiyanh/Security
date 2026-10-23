@@ -45,7 +45,7 @@
 <!-- ADMIN -->
 <section id="admin" class="hide">
   <div class="grid">
-    <div>
+    <div class="leftcol">
       <div class="card"><h2>On duty now</h2><div id="active"><span class="mut">No guards on duty.</span></div></div>
       <div class="card"><h2>Recent shifts</h2><div id="recent"></div></div>
       <div class="card">
@@ -59,6 +59,13 @@
       </div>
     </div>
     <div>
+      <div id="backbar" class="card">
+        <button id="gvback" type="button">← All guards</button>
+        <h2 style="margin:12px 0 4px"><span id="gvname"></span> <span id="gvstat" class="mut"></span></h2>
+        <label class="mut" for="gvshift">Shift</label>
+        <select id="gvshift"></select>
+        <div id="gvsum" class="mut"></div>
+      </div>
       <div class="card"><h2 id="mtitle">Select a shift to see the route</h2><div id="amap" class="map tall"></div></div>
       <div class="card"><h2>Checkpoint photos and steps</h2><div id="progress"><span class="mut">Select a shift to see which checkpoints were visited.</span></div></div>
       <div class="card"><h2>Other photos (not at a checkpoint)</h2><div id="thumbs" class="thumbs"><span class="mut">No photos.</span></div></div>
