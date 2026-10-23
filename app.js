@@ -1,0 +1,406 @@
+// 1) PASTE YOUR FIREBASE CONFIG HERE (Firebase console > Project settings > Your apps > Web)
+const firebaseConfig = {
+  apiKey: "AIzaSyD2UMIQTfyCujdeGAnClcz1B2xkjOccNYo",
+  authDomain: "sym-security.firebaseapp.com",
+  projectId: "sym-security",
+  storageBucket: "sym-security.firebasestorage.app",
+  messagingSenderId: "715027680832",
+  appId: "1:715027680832:web:5e6d4710c5a055242619a5"
+};
+// 2) PASTE YOUR CLOUDINARY DETAILS HERE (cloud name + an UNSIGNED upload preset)
+const CLOUDINARY_CLOUD = "jby85ass";
+const CLOUDINARY_PRESET = "guard_patrol";
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth(), db = firebase.firestore();
+const $ = id => document.getElementById(id);
+const ts = () => firebase.firestore.FieldValue.serverTimestamp();
+const fmt = d => (d && d.toDate ? d.toDate() : new Date(d || Date.now())).toLocaleString();
+let me = null, unsubs = [];
+
+/* ---------- AUTH ---------- */
+function authMsg(e) {
+  const m = {
+    'auth/invalid-email': 'The email address is not valid. Check for typing mistakes or spaces.',
+    'auth/user-not-found': 'No account exists for this email. Ask the admin to create your account.',
+    'auth/wrong-password': 'The password is wrong. Try again or ask the admin to reset it.',
+    'auth/invalid-credential': 'The email or password is wrong, or this account has not been created in Firebase Authentication yet. Check both, or ask the admin.',
+    'auth/user-disabled': 'This account has been disabled. Contact the admin.',
+    'auth/too-many-requests': 'Too many failed attempts. Wait a few minutes, then try again.',
+    'auth/network-request-failed': 'No internet connection. Check your network and try again.',
+    'auth/operation-not-allowed': 'Email/password sign-in is turned off. Admin: enable it in Firebase Authentication > Sign-in method.',
+    'auth/invalid-api-key': 'The Firebase API key in app.js is not valid. Admin: check firebaseConfig.',
+    'auth/api-key-not-valid.-please-pass-a-valid-api-key.': 'The Firebase API key in app.js is not valid. Admin: check firebaseConfig.',
+    'auth/unauthorized-domain': 'This website address is not allowed. Admin: add it under Authentication > Settings > Authorized domains.'
+  };
+  return (m[e.code] || 'Sign-in failed.') + '  [' + (e.code || e.message) + ']';
+}
+$('bin').onclick = async () => {
+  const em = $('email').value.trim(), pw = $('pass').value;
+  if (!em || !pw) { $('err').textContent = 'Enter your email and password.'; return; }
+  $('err').textContent = 'Signing in...'; $('bin').disabled = true;
+  try { await auth.signInWithEmailAndPassword(em, pw); $('err').textContent = ''; }
+  catch (e) { $('err').textContent = authMsg(e); }
+  $('bin').disabled = false;
+};
+$('pass').addEventListener('keydown', e => { if (e.key === 'Enter') $('bin').click(); });
+$('out').onclick = () => auth.signOut();
+
+auth.onAuthStateChanged(async u => {
+  unsubs.forEach(f => f()); unsubs = [];
+  if (meWatch !== null) { navigator.geolocation.clearWatch(meWatch); meWatch = null; centered = false; }
+  ['login', 'guard', 'admin'].forEach(i => $(i).classList.add('hide'));
+  $('out').classList.toggle('hide', !u);
+  if (!u) { $('who').textContent = ''; $('login').classList.remove('hide'); return; }
+  let snap;
+  try { snap = await db.doc('users/' + u.uid).get(); }
+  catch (e) {
+    await auth.signOut();
+    $('err').textContent = 'Signed in, but your profile could not be loaded (' + e.code + '). Admin: publish the Firestore rules and make sure the Firestore database exists.';
+    return;
+  }
+  me = { uid: u.uid, ...(snap.data() || { name: u.email, role: 'guard' }) };
+  $('who').textContent = me.name + ' (' + me.role + ')';
+  if (me.role === 'admin') { $('admin').classList.remove('hide'); initAdmin(); }
+  else { $('guard').classList.remove('hide'); initGuard(); }
+});
+
+/* ---------- MAP HELPERS ---------- */
+function makeMap(el) {
+  const m = L.map(el).setView([14.5995, 120.9842], 15);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', { attribution: '© OpenStreetMap', maxZoom: 19 }).addTo(m);
+  return m;
+}
+const pin = c => L.divIcon({ className: '', html: `<div style="width:16px;height:16px;border-radius:50%;background:${c};border:3px solid #fff;box-shadow:0 0 4px #0008"></div>`, iconSize: [16, 16], iconAnchor: [8, 8] });
+const getPos = () => new Promise((ok, no) => navigator.geolocation.getCurrentPosition(ok, no, { enableHighAccuracy: true, timeout: 15000 }));
+
+/* ---------- CHECKPOINTS ---------- */
+let cps = [], done = {}, doneUnsub = null, pendingCp = null, myLL = null, myAcc = 0, gcpLayer = null, acpLayer = null, selDone = {}, selPhotos = {}, placeHandler = null;
+const esc = t => String(t).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+const cpIcon = (n, col) => L.divIcon({ className: '', html: `<div class="cpnum" style="background:${col}">${n}</div>`, iconSize: [26, 26], iconAnchor: [13, 13] });
+function drawCps(grp, doneMap) {
+  if (!grp) return;
+  grp.clearLayers();
+  cps.forEach((c, i) => {
+    const ok = !!doneMap[c.id], col = ok ? '#1f9d55' : '#e08a1d';
+    L.circle([c.lat, c.lng], { radius: c.radius, color: col, weight: 2, dashArray: '5 5', fillColor: col, fillOpacity: 0.12 }).addTo(grp);
+    L.marker([c.lat, c.lng], { icon: cpIcon(i + 1, col) }).addTo(grp).bindPopup('<b>' + esc(c.name) + '</b><br>' + (ok ? 'Done ' + fmt(doneMap[c.id]) : 'Not visited'));
+  });
+}
+const distTo = c => myLL ? L.latLng(myLL).distanceTo([c.lat, c.lng]) : null;
+const isNear = (d, acc, c) => d !== null && d - Math.min(acc, 30) <= c.radius;   // allows for GPS inaccuracy
+
+/* ---------- STEP COUNTER (phone motion sensor; GPS distance estimate if no sensor) ---------- */
+const STRIDE_M = 0.75;
+let steps = 0, gpsDist = 0, legSteps0 = 0, legDist0 = 0, lastCpName = 'Start of duty', motionOK = false, motionOn = false, lastStepAt = 0, gBase = 9.8, prevD = 0;
+const curSteps = () => motionOK ? steps : Math.round(gpsDist / STRIDE_M);
+const skey = () => 'patrol:' + shiftId;
+function persist() { try { localStorage.setItem(skey(), JSON.stringify({ steps, gpsDist, legSteps0, legDist0, lastCpName, motionOK })); } catch (e) {} }
+function restore() {
+  steps = 0; gpsDist = 0; legSteps0 = 0; legDist0 = 0; lastCpName = 'Start of duty'; motionOK = false;
+  try { const v = JSON.parse(localStorage.getItem(skey()) || 'null'); if (v) ({ steps, gpsDist, legSteps0, legDist0, lastCpName, motionOK } = v); } catch (e) {}
+}
+function updateStepUI() {
+  $('stepinfo').textContent = shiftId ? 'Steps since ' + lastCpName + ': ' + (curSteps() - legSteps0) + '  ·  Total: ' + curSteps() + (motionOK ? '' : ' (estimated from GPS)') : '';
+}
+function onMotion(e) {
+  const a = e.accelerationIncludingGravity; if (!a || a.x == null || !shiftId) return;
+  if (!motionOK) { steps = Math.round(gpsDist / STRIDE_M); motionOK = true; }   // carry the estimate over so the count never jumps
+  const m = Math.hypot(a.x, a.y, a.z); gBase = gBase * 0.97 + m * 0.03;
+  const d = m - gBase, now = Date.now();
+  if (prevD < 1.2 && d >= 1.2 && now - lastStepAt > 300) { steps++; lastStepAt = now; if (steps % 5 === 0) persist(); updateStepUI(); }
+  prevD = d;
+}
+async function startMotion() {   // call from a tap: iPhone asks for motion permission here
+  if (motionOn) return;
+  try {
+    if (window.DeviceMotionEvent && typeof DeviceMotionEvent.requestPermission === 'function') {
+      if ((await DeviceMotionEvent.requestPermission()) !== 'granted') return;
+    }
+  } catch (e) { return; }
+  window.addEventListener('devicemotion', onMotion); motionOn = true;
+}
+
+/* ---------- GUARD ---------- */
+let gmap, gline, shiftId = null, watchId = null, lastPt = null, gpts = [];
+async function notify(text) { await db.collection('notifications').add({ text, guard: me.name, at: ts() }); }
+
+/* Ask for location permission; explain how to fix it if the guard blocked it */
+async function ensureLocation() {
+  const box = $('locwarn');
+  const ok = () => { box.classList.add('hide'); return true; };
+  const blocked = () => {
+    box.innerHTML = '<b>Location is blocked.</b> You cannot start duty without it. Tap the lock icon next to the web address, set Location to <b>Allow</b>, then reload this page.<br><button id="locretry" style="margin-top:8px">I allowed it, check again</button>';
+    box.classList.remove('hide');
+    $('locretry').onclick = () => location.reload();
+    return false;
+  };
+  if (!navigator.geolocation) { box.textContent = 'This device or browser does not support location.'; box.classList.remove('hide'); return false; }
+  try {
+    if (navigator.permissions) {
+      const st = await navigator.permissions.query({ name: 'geolocation' });
+      if (st.state === 'granted') return ok();
+      if (st.state === 'denied') return blocked();
+    }
+  } catch (e) {}
+  try { await getPos(); return ok(); }   // shows the browser's Allow / Block prompt
+  catch (e) { return e.code === 1 ? blocked() : (box.textContent = 'Could not get your location. Turn on GPS and try again.', box.classList.remove('hide'), false); }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden && me && me.role !== 'admin' && !shiftId) ensureLocation(); });
+
+/* Blue "you are here" dot with an accuracy circle, like a maps app */
+let meDot = null, meCircle = null, meWatch = null, centered = false;
+function showMyLocation() {
+  if (meWatch !== null || !navigator.geolocation) return;
+  meWatch = navigator.geolocation.watchPosition(p => {
+    const ll = [p.coords.latitude, p.coords.longitude];
+    myLL = ll; myAcc = p.coords.accuracy; updateCpDist();
+    if (!meDot) {
+      meCircle = L.circle(ll, { radius: p.coords.accuracy, color: '#1d6fe0', weight: 1, fillColor: '#1d6fe0', fillOpacity: 0.15 }).addTo(gmap);
+      meDot = L.marker(ll, { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 1000 }).addTo(gmap).bindTooltip('You are here');
+    } else { meDot.setLatLng(ll); meCircle.setLatLng(ll).setRadius(p.coords.accuracy); }
+    if (!centered) { gmap.setView(ll, 17); centered = true; }
+  }, () => {}, { enableHighAccuracy: true, maximumAge: 5000 });
+}
+
+function renderCpList() {
+  const box = $('cplist'); box.innerHTML = '';
+  if (!cps.length) { box.innerHTML = '<span class="mut">The admin has not added checkpoints yet.</span>'; $('cpcount').textContent = ''; return; }
+  $('cpcount').textContent = '(' + cps.filter(c => done[c.id]).length + ' of ' + cps.length + ' done)';
+  cps.forEach((c, i) => {
+    const row = document.createElement('div'); row.className = 'item cp';
+    row.innerHTML = `<div class="row" style="justify-content:space-between;flex-wrap:nowrap"><div><b>${i + 1}. ${esc(c.name)}</b><div class="mut" id="cps-${c.id}"></div></div><button id="cpb-${c.id}"></button></div>`;
+    row.querySelector('button').onclick = () => { startMotion(); pendingCp = c; $('file').click(); };
+    box.appendChild(row);
+  });
+  updateCpDist();
+}
+function updateCpDist() {
+  cps.forEach(c => {
+    const s = $('cps-' + c.id), b = $('cpb-' + c.id); if (!s || !b) return;
+    const d = distTo(c), ok = !!done[c.id], near = isNear(d, myAcc, c);
+    s.textContent = (ok ? '✓ Done ' + fmt(done[c.id]) + ' · ' : '') +
+      (!shiftId ? 'Start duty first' : d === null ? 'Finding your location…' : near ? 'You are at the checkpoint' : Math.round(d) + ' m away (get within ' + c.radius + ' m)');
+    b.textContent = ok ? 'Retake photo' : 'Take photo';
+    b.disabled = !(shiftId && near);
+  });
+}
+function watchDone() {
+  if (doneUnsub) doneUnsub();
+  doneUnsub = db.collection('shifts/' + shiftId + '/photos').onSnapshot(s => {
+    done = {}; s.forEach(d => { const v = d.data(); if (v.checkpointId) done[v.checkpointId] = v.at || new Date(); });
+    renderCpList(); drawCps(gcpLayer, done);
+  });
+}
+
+function initGuard() {
+  shiftId = null; done = {}; if (doneUnsub) { doneUnsub(); doneUnsub = null; }
+  if (watchId !== null) { navigator.geolocation.clearWatch(watchId); watchId = null; }
+  ensureLocation().then(ok => { if (ok) showMyLocation(); });
+  if (!gmap) { gmap = makeMap('gmap'); gline = L.polyline([], { color: '#1d6fe0', weight: 5 }).addTo(gmap); gcpLayer = L.layerGroup().addTo(gmap); }
+  unsubs.push(db.collection('checkpoints').orderBy('order').onSnapshot(sn => {
+    cps = sn.docs.map(d => ({ id: d.id, ...d.data() })); renderCpList(); drawCps(gcpLayer, done);
+  }));
+  setTimeout(() => gmap.invalidateSize(), 200);
+  db.collection('shifts').where('guardId', '==', me.uid).where('status', '==', 'active').limit(1).get().then(s => {
+    if (!s.empty) { shiftId = s.docs[0].id; beginTracking(); }
+    else setUI(false);
+  });
+}
+function setUI(on) {
+  $('start').classList.toggle('hide', on);
+  $('end').classList.toggle('hide', !on);
+  $('gstatus').textContent = on ? 'You are ON DUTY. Location is being recorded.' : 'You are off duty.';
+}
+function beginTracking() {
+  restore(); startMotion(); updateStepUI();
+  setUI(true); gpts = []; lastPt = null; gline.setLatLngs([]); watchDone();
+  watchId = navigator.geolocation.watchPosition(p => {
+    const pt = [p.coords.latitude, p.coords.longitude];
+    if (lastPt && gmap.distance(lastPt, pt) < 8) return; // ignore GPS jitter
+    if (lastPt) gpsDist += gmap.distance(lastPt, pt); lastPt = pt; gpts.push(pt); gline.setLatLngs(gpts); persist(); updateStepUI(); gmap.setView(pt, 17);
+    db.collection('shifts/' + shiftId + '/points').add({ lat: pt[0], lng: pt[1], at: ts() });
+  }, e => $('gmsg').textContent = 'GPS error: ' + e.message + '. Allow location access.', { enableHighAccuracy: true, maximumAge: 5000 });
+}
+$('start').onclick = async () => {
+  startMotion();
+  if (!(await ensureLocation())) return;
+  showMyLocation();
+  try {
+    const p = await getPos();
+    const ref = await db.collection('shifts').add({ guardId: me.uid, guardName: me.name, status: 'active', start: ts(), startLat: p.coords.latitude, startLng: p.coords.longitude });
+    shiftId = ref.id; await notify('started duty'); beginTracking();
+  } catch (e) { $('gmsg').textContent = 'Could not get location. Turn on GPS and allow access.'; }
+};
+$('end').onclick = async () => {
+  if (!confirm('End your duty?')) return;
+  const last = lastPt || [null, null];
+  navigator.geolocation.clearWatch(watchId);
+  await db.doc('shifts/' + shiftId).update({ status: 'ended', end: ts(), endLat: last[0], endLng: last[1] });
+  await notify('ended duty'); try { localStorage.removeItem(skey()); } catch (e) {}
+  shiftId = null; setUI(false); updateStepUI();
+  if (doneUnsub) { doneUnsub(); doneUnsub = null; }
+  done = {}; renderCpList(); drawCps(gcpLayer, done);
+};
+$('file').onchange = async e => {
+  const f = e.target.files[0], cp = pendingCp; if (!f) return;
+  if (!cp || !shiftId) { $('gmsg').textContent = 'Choose a checkpoint first.'; e.target.value = ''; return; }
+  $('gmsg').textContent = 'Saving photo…';
+  try {
+    const p = await getPos(), lat = p.coords.latitude, lng = p.coords.longitude, now = new Date();
+    const dist = L.latLng(lat, lng).distanceTo([cp.lat, cp.lng]);
+    if (!isNear(dist, p.coords.accuracy, cp)) { $('gmsg').textContent = 'You are ' + Math.round(dist) + ' m from "' + cp.name + '". Move within ' + cp.radius + ' m and try again.'; e.target.value = ''; return; }
+    const bmp = await createImageBitmap(f), s = Math.min(1, 800 / bmp.width);
+    const c = document.createElement('canvas'); c.width = bmp.width * s; c.height = bmp.height * s;
+    const x = c.getContext('2d'); x.drawImage(bmp, 0, 0, c.width, c.height);
+    const total = curSteps(), legSteps = total - legSteps0, legM = Math.round(gpsDist - legDist0), from = lastCpName, est = motionOK ? '' : '~';
+    const idx = cps.findIndex(k => k.id === cp.id) + 1, doneAfter = new Set(Object.keys(done)); doneAfter.add(cp.id);
+    const finished = cps.length > 0 && cps.every(k => doneAfter.has(k.id));
+    const lines = [
+      'CHECKPOINT ' + idx + '/' + cps.length + ': ' + cp.name,
+      now.toLocaleString(),
+      'GPS ' + lat.toFixed(6) + ', ' + lng.toFixed(6) + ' (+/-' + Math.round(p.coords.accuracy) + ' m)',
+      'Steps from ' + from + ': ' + est + legSteps + ' (' + legM + ' m)',
+      'Total steps: ' + est + total,
+      'Guard: ' + me.name];
+    if (finished) lines.unshift('PATROL COMPLETE - ALL ' + cps.length + ' CHECKPOINTS');
+    let fs = Math.max(14, c.width / 34);
+    x.font = `bold ${fs}px sans-serif`;
+    while (fs > 10 && Math.max(...lines.map(t => x.measureText(t).width)) > c.width - 20) { fs--; x.font = `bold ${fs}px sans-serif`; }
+    const boxH = fs * 1.3 * lines.length + fs * 0.7;
+    x.fillStyle = '#000a'; x.fillRect(0, c.height - boxH, c.width, boxH);
+    x.fillStyle = '#fff'; lines.forEach((t, i) => { if (finished && i === 0) x.fillStyle = '#7dffa8'; x.fillText(t, 10, c.height - boxH + fs * 1.15 + i * fs * 1.3); if (i === 0) x.fillStyle = '#fff'; });
+    const blob = await new Promise(r => c.toBlob(r, 'image/jpeg', 0.8));
+    const fd = new FormData();
+    fd.append('file', blob); fd.append('upload_preset', CLOUDINARY_PRESET); fd.append('folder', 'patrol');
+    const res = await fetch('https://api.cloudinary.com/v1_1/' + CLOUDINARY_CLOUD + '/image/upload', { method: 'POST', body: fd });
+    const up = await res.json();
+    if (!up.secure_url) throw new Error((up.error && up.error.message) || 'Cloudinary upload failed');
+    await db.collection('shifts/' + shiftId + '/photos').add({ img: up.secure_url, lat, lng, checkpointId: cp.id, checkpointName: cp.name, checkpointIndex: idx, distance: Math.round(dist), fromName: from, stepsLeg: legSteps, stepsTotal: total, legMeters: legM, stepsEstimated: !motionOK, accuracy: Math.round(p.coords.accuracy), finished, at: ts() });
+    legSteps0 = total; legDist0 = gpsDist; lastCpName = cp.name; persist(); updateStepUI();
+    await notify('took a photo at ' + cp.name);
+    $('gmsg').textContent = 'Photo saved for ' + cp.name + '.';
+  } catch (err) { $('gmsg').textContent = 'Photo failed: ' + err.message; }
+  e.target.value = '';
+};
+
+/* ---------- ADMIN ---------- */
+let amap, layer, sel = null, selUnsubs = [], booted = false;
+function toast(t) {
+  const d = document.createElement('div'); d.className = 'toast'; d.textContent = t; $('toasts').appendChild(d);
+  setTimeout(() => d.remove(), 8000);
+  try { if (Notification.permission === 'granted') new Notification('Guard Patrol', { body: t }); } catch (e) {}
+  try { const a = new (window.AudioContext || webkitAudioContext)(), o = a.createOscillator(); o.connect(a.destination); o.frequency.value = 880; o.start(); o.stop(a.currentTime + 0.2); } catch (e) {}
+}
+function initAdmin() {
+  if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
+  if (!amap) { amap = makeMap('amap'); acpLayer = L.layerGroup().addTo(amap); layer = L.layerGroup().addTo(amap); }
+  setTimeout(() => amap.invalidateSize(), 200);
+  booted = false;
+  unsubs.push(db.collection('checkpoints').orderBy('order').onSnapshot(sn => {
+    cps = sn.docs.map(d => ({ id: d.id, ...d.data() })); renderCpAdmin(); drawCps(acpLayer, selDone); renderProgress();
+  }));
+  unsubs.push(db.collection('notifications').orderBy('at', 'desc').limit(1).onSnapshot(s => {
+    if (!booted) { booted = true; return; }
+    s.docChanges().forEach(c => { if (c.type === 'added' && c.doc.data().at) toast(c.doc.data().guard + ' ' + c.doc.data().text); });
+  }));
+  unsubs.push(db.collection('shifts').orderBy('start', 'desc').limit(30).onSnapshot(s => {
+    const act = $('active'), rec = $('recent'); act.innerHTML = ''; rec.innerHTML = '';
+    s.forEach(d => {
+      const v = d.data(), on = v.status === 'active';
+      const el = document.createElement('div'); el.className = 'item' + (d.id === sel ? ' sel' : '');
+      el.innerHTML = `<span class="dot ${on ? 'on' : ''}"></span><b>${v.guardName}</b><div class="mut">${fmt(v.start)}${on ? ' · on duty' : ' → ' + fmt(v.end)}</div>`;
+      el.onclick = () => select(d.id, v);
+      (on ? act : rec).appendChild(el);
+    });
+    if (!act.children.length) act.innerHTML = '<span class="mut">No guards on duty.</span>';
+  }));
+}
+function renderProgress() {
+  const b = $('progress');
+  if (!sel) { b.innerHTML = '<span class="mut">Select a shift to see which checkpoints were visited.</span>'; return; }
+  if (!cps.length) { b.innerHTML = '<span class="mut">No checkpoints yet.</span>'; return; }
+  const got = cps.filter(c => selPhotos[c.id]);
+  const total = Math.max(0, ...got.map(c => selPhotos[c.id].stepsTotal || 0));
+  b.innerHTML = `<p><b>${got.length} of ${cps.length}</b> checkpoints visited · <b>${total}</b> total steps${got.length === cps.length ? ' · ✅ patrol complete' : ''}</p><div class="cpgrid">` +
+    cps.map((c, i) => {
+      const p = selPhotos[c.id];
+      return p
+        ? `<div class="cpcard"><b>${i + 1}. ${esc(c.name)}</b><div class="mut">${fmt(p.at)}</div><img class="cpimg zoomable" src="${p.img}" alt="Photo at ${esc(c.name)}" loading="lazy"><div class="mut">${p.stepsLeg != null ? (p.stepsEstimated ? '~' : '') + p.stepsLeg + ' steps from ' + esc(p.fromName) + ' (' + p.legMeters + ' m) · total ' + p.stepsTotal : ''}</div></div>`
+        : `<div class="cpcard"><b>${i + 1}. ${esc(c.name)}</b><div class="mut">⬜ Not visited yet</div></div>`;
+    }).join('') + '</div>';
+}
+function renderCpAdmin() {
+  const b = $('cpadmin'); b.innerHTML = cps.length ? '' : '<span class="mut">No checkpoints yet.</span>';
+  cps.forEach((c, i) => {
+    const r = document.createElement('div'); r.className = 'item';
+    r.innerHTML = `<div class="row" style="justify-content:space-between;flex-wrap:nowrap"><div><b>${i + 1}. ${esc(c.name)}</b><div class="mut">Radius ${c.radius} m</div></div><button class="bad" style="min-height:40px;padding:6px 12px">Delete</button></div>`;
+    r.firstElementChild.firstElementChild.onclick = () => amap.setView([c.lat, c.lng], 18);
+    r.querySelector('button').onclick = e => { e.stopPropagation(); if (confirm('Delete checkpoint "' + c.name + '"?')) db.doc('checkpoints/' + c.id).delete(); };
+    b.appendChild(r);
+  });
+}
+async function saveCp(lat, lng) {
+  const name = $('cpname').value.trim(), radius = Math.max(10, +$('cpradius').value || 30);
+  await db.collection('checkpoints').add({ name, lat, lng, radius, order: Date.now() });
+  $('cpname').value = ''; $('cpmsg').textContent = 'Checkpoint added.';
+}
+function needName() {
+  if ($('cpname').value.trim()) return true;
+  $('cpmsg').textContent = 'Type a checkpoint name first.'; $('cpname').focus(); return false;
+}
+$('cpmap').onclick = () => {
+  if (!needName()) return;
+  $('cpmsg').textContent = 'Tap the map where the checkpoint is.';
+  amap.getContainer().style.cursor = 'crosshair';
+  $('amap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  if (placeHandler) amap.off('click', placeHandler);
+  placeHandler = e => { amap.off('click', placeHandler); placeHandler = null; amap.getContainer().style.cursor = ''; saveCp(e.latlng.lat, e.latlng.lng).catch(err => $('cpmsg').textContent = 'Could not save: ' + err.message); };
+  amap.on('click', placeHandler);
+};
+$('cpgps').onclick = async () => {
+  if (!needName()) return;
+  try { const p = await getPos(); await saveCp(p.coords.latitude, p.coords.longitude); }
+  catch (e) { $('cpmsg').textContent = 'Could not get your location or save. ' + (e.message || ''); }
+};
+
+function select(id, v) {
+  sel = id; selDone = {}; selPhotos = {}; selUnsubs.forEach(f => f()); selUnsubs = [];
+  if (window.innerWidth < 700) $('amap').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  $('mtitle').textContent = v.guardName + ' — ' + fmt(v.start);
+  document.querySelectorAll('.item').forEach(e => e.classList.remove('sel'));
+  let pts = [], photos = [];
+  const draw = () => {
+    layer.clearLayers();
+    if (pts.length) {
+      const ll = pts.map(p => [p.lat, p.lng]);
+      L.polyline(ll, { color: '#1d6fe0', weight: 5 }).addTo(layer);
+      L.marker(ll[0], { icon: pin('#1f9d55') }).addTo(layer).bindPopup('Start: ' + fmt(pts[0].at));
+      const last = pts[pts.length - 1];
+      L.marker(ll[ll.length - 1], { icon: pin(v.status === 'active' ? '#1d6fe0' : '#d64545') }).addTo(layer)
+        .bindPopup((v.status === 'active' ? 'Latest: ' : 'End: ') + fmt(last.at));
+      amap.fitBounds(ll, { padding: [30, 30], maxZoom: 18 });
+    }
+    photos.forEach(p => L.marker([p.lat, p.lng]).addTo(layer).bindPopup(`<div class="pop">${p.checkpointName ? '<b>' + esc(p.checkpointName) + '</b><br>' : ''}<img class="zoomable" src="${p.img}"><br>${fmt(p.at)}${p.stepsLeg != null ? '<br>' + p.stepsLeg + ' steps from ' + esc(p.fromName) : ''}</div>`));
+    const extra = photos.filter(p => !p.checkpointId);
+    $('thumbs').innerHTML = extra.length ? '' : '<span class="mut">None.</span>';
+    selDone = {}; selPhotos = {}; photos.forEach(p => { if (p.checkpointId) { selDone[p.checkpointId] = p.at; selPhotos[p.checkpointId] = p; } });
+    drawCps(acpLayer, selDone); renderProgress();
+    extra.forEach(p => { const i = new Image(); i.src = p.img; i.className = 'zoomable'; $('thumbs').appendChild(i); });
+  };
+  selUnsubs.push(db.collection('shifts/' + id + '/points').orderBy('at').onSnapshot(s => { pts = s.docs.map(d => d.data()).filter(p => p.at); draw(); }));
+  selUnsubs.push(db.collection('shifts/' + id + '/photos').orderBy('at').onSnapshot(s => { photos = s.docs.map(d => d.data()).filter(p => p.at); draw(); }));
+}
+
+/* keep maps correct when the phone/tablet rotates or the window resizes */
+function fixMaps() { setTimeout(() => { if (gmap) gmap.invalidateSize(); if (amap) amap.invalidateSize(); }, 250); }
+window.addEventListener('resize', fixMaps);
+window.addEventListener('orientationchange', fixMaps);
+
+/* full-screen photo viewer (tap any photo) */
+document.addEventListener('click', e => {
+  const t = e.target;
+  if (t.classList && t.classList.contains('zoomable')) { $('vimg').src = t.src; $('vopen').href = t.src; $('viewer').classList.remove('hide'); }
+});
+$('vclose').onclick = () => $('viewer').classList.add('hide');
+$('viewer').addEventListener('click', e => { if (e.target.id === 'viewer') $('viewer').classList.add('hide'); });
+document.addEventListener('keydown', e => { if (e.key === 'Escape') $('viewer').classList.add('hide'); });
