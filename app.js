@@ -291,11 +291,20 @@ function setUI(on) {
   $('end').classList.toggle('hide', !on);
   $('gstatus').textContent = on ? 'You are ON DUTY. Location is being recorded.' : 'You are off duty.';
 }
+let lastBeat = 0;
+function sendBeat(lat, lng, acc) {   // tells the admin where the guard is right now (and that the app is alive)
+  if (!shiftId || Date.now() - lastBeat < 10000) return;
+  lastBeat = Date.now();
+  db.doc('shifts/' + shiftId).update({ lastLat: lat, lastLng: lng, lastAcc: Math.round(acc || 0), lastAt: ts() }).catch(() => {});
+}
+setInterval(() => { if (shiftId && myLL) sendBeat(myLL[0], myLL[1], myAcc); }, 20000);
+
 function beginTracking() {
   restore(); startMotion(); updateStepUI();
   setUI(true); gpts = []; lastPt = null; gline.setLatLngs([]); watchDone();
   watchId = navigator.geolocation.watchPosition(p => {
     const pt = [p.coords.latitude, p.coords.longitude];
+    sendBeat(pt[0], pt[1], p.coords.accuracy);
     if (lastPt && gmap.distance(lastPt, pt) < 8) return; // ignore GPS jitter
     if (lastPt) gpsDist += gmap.distance(lastPt, pt); lastPt = pt; gpts.push(pt); gline.setLatLngs(gpts); persist(); updateStepUI(); gmap.setView(pt, 17);
     db.collection('shifts/' + shiftId + '/points').add({ lat: pt[0], lng: pt[1], at: ts() });
@@ -372,11 +381,59 @@ function toast(t) {
   try { if (Notification.permission === 'granted') new Notification('Guard Patrol', { body: t }); } catch (e) {}
   try { const a = new (window.AudioContext || webkitAudioContext)(), o = a.createOscillator(); o.connect(a.destination); o.frequency.value = 880; o.start(); o.stop(a.currentTime + 0.2); } catch (e) {}
 }
+/* ---------- LIVE MAP (admin sees every guard on duty, with their route) ---------- */
+let liveLayer = null, selLiveLayer = null, liveSubs = {}, livePts = {};
+const GCOL = ['#1d6fe0', '#e0561d', '#8a3fd1', '#0e9aa7', '#c2185b', '#6d8f00'];
+const gcol = id => GCOL[[...String(id)].reduce((a, ch) => a + ch.charCodeAt(0), 0) % GCOL.length];
+function ago(t) {
+  const sec = Math.max(0, Math.round((Date.now() - (t.toDate ? t.toDate() : new Date(t)).getTime()) / 1000));
+  return sec < 60 ? sec + 's ago' : sec < 3600 ? Math.round(sec / 60) + ' min ago' : Math.round(sec / 3600) + ' h ago';
+}
+function liveMarker(x, pts) {
+  const pos = x.lastLat != null ? [x.lastLat, x.lastLng] : (pts && pts.length ? pts[pts.length - 1] : null);
+  if (!pos) return null;
+  const col = gcol(x.guardId), stale = x.lastAt && x.lastAt.toDate && (Date.now() - x.lastAt.toDate().getTime()) > 120000;
+  return L.marker(pos, { icon: L.divIcon({ className: '', html: `<div class="me-dot${stale ? ' stale' : ''}" style="background:${stale ? '#8896a3' : col}"></div>`, iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 1000 })
+    .bindTooltip(esc(x.guardName) + (x.lastAt ? ' · ' + ago(x.lastAt) : ' · live'), { permanent: true, direction: 'top', offset: [0, -10] });
+}
+function drawLive() {
+  if (!liveLayer) return;
+  liveLayer.clearLayers();
+  if ($('admin').classList.contains('gv')) return;
+  allShifts.filter(x => x.status === 'active').forEach(x => {
+    const pts = livePts[x.id] || [], col = gcol(x.guardId);
+    if (pts.length > 1) L.polyline(pts, { color: col, weight: 5, opacity: 0.9, interactive: false }).addTo(liveLayer);
+    if (pts.length) L.marker(pts[0], { icon: pin('#1f9d55'), interactive: false }).addTo(liveLayer);
+    const m = liveMarker(x, pts);
+    if (m) m.addTo(liveLayer).on('click', () => openGuard(x.guardId, x.id));
+  });
+}
+function drawSelLive() {   // live dot for the guard opened in the guard view
+  if (!selLiveLayer) return;
+  selLiveLayer.clearLayers();
+  const x = allShifts.find(k => k.id === sel);
+  if (!x || x.status !== 'active') return;
+  const m = liveMarker(x, null); if (m) m.addTo(selLiveLayer);
+}
+function syncLive() {
+  const act = allShifts.filter(x => x.status === 'active'), ids = new Set(act.map(x => x.id));
+  Object.keys(liveSubs).forEach(id => { if (!ids.has(id)) { liveSubs[id](); delete liveSubs[id]; delete livePts[id]; } });
+  act.forEach(x => {
+    if (liveSubs[x.id]) return;
+    liveSubs[x.id] = db.collection('shifts/' + x.id + '/points').orderBy('at').onSnapshot(sn => {
+      livePts[x.id] = sn.docs.map(d => d.data()).filter(p => p.at).map(p => [p.lat, p.lng]); drawLive();
+    });
+  });
+  drawLive();
+}
+
 function initAdmin() {
   if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission();
-  if (!amap) { amap = makeMap('amap'); acpLayer = L.layerGroup().addTo(amap); layer = L.layerGroup().addTo(amap); }
+  if (!amap) { amap = makeMap('amap'); acpLayer = L.layerGroup().addTo(amap); layer = L.layerGroup().addTo(amap); liveLayer = L.layerGroup().addTo(amap); selLiveLayer = L.layerGroup().addTo(amap); }
   setTimeout(() => amap.invalidateSize(), 200);
   booted = false;
+  const liveTimer = setInterval(() => { drawLive(); drawSelLive(); }, 30000);   // refreshes "last seen" times
+  unsubs.push(() => { clearInterval(liveTimer); Object.values(liveSubs).forEach(f => f()); liveSubs = {}; livePts = {}; });
   unsubs.push(db.collection('checkpoints').orderBy('order').onSnapshot(sn => {
     cps = sn.docs.map(d => ({ id: d.id, ...d.data() })); renderCpAdmin(); drawCps(acpLayer, selDone); renderProgress();
   }));
@@ -391,15 +448,17 @@ function initAdmin() {
     allShifts.forEach(v => {
       const on = v.status === 'active';
       const el = document.createElement('div'); el.className = 'item' + (v.id === sel ? ' sel' : '');
-      el.innerHTML = `<span class="go">View ›</span><span class="dot ${on ? 'on' : ''}"></span><b>${esc(v.guardName)}</b><div class="mut">${fmt(v.start)}${on ? ' · on duty' : ' → ' + fmt(v.end)}</div>`;
+      el.innerHTML = `<span class="go">View ›</span><span class="dot ${on ? 'on' : ''}"></span><b>${esc(v.guardName)}</b><div class="mut">${fmt(v.start)}${on ? ' · on duty' + (v.lastAt ? ' · seen ' + ago(v.lastAt) : '') : ' → ' + fmt(v.end)}</div>`;
       el.onclick = () => openGuard(v.guardId, v.id);
       (on ? act : rec).appendChild(el);
     });
     if (!act.children.length) act.innerHTML = '<span class="mut">No guards on duty.</span>';
+    syncLive();
     if ($('admin').classList.contains('gv')) {
       refreshGvSelect();
       const cur = allShifts.find(x => x.id === sel);
       if (cur) { updateGvHeader(cur); if (cur.status !== selStatus) select(cur.id, cur); }
+      drawSelLive();
     }
   }));
 }
@@ -417,15 +476,15 @@ function refreshGvSelect() {
 }
 function openGuard(guardId, shiftId) {
   const v = allShifts.find(x => x.id === shiftId); if (!v) return;
-  gvGuard = guardId; $('admin').classList.add('gv');
+  gvGuard = guardId; $('admin').classList.add('gv'); drawLive();
   refreshGvSelect(); updateGvHeader(v); select(shiftId, v);
   window.scrollTo(0, 0); setTimeout(() => amap.invalidateSize(), 150);
 }
 function closeGuard() {
   $('admin').classList.remove('gv'); gvGuard = null;
   selUnsubs.forEach(f => f()); selUnsubs = []; sel = null; selStatus = null; selDone = {}; selPhotos = {};
-  layer.clearLayers(); drawCps(acpLayer, selDone); renderProgress();
-  $('mtitle').textContent = 'Select a shift to see the route'; $('thumbs').innerHTML = '<span class="mut">None.</span>';
+  layer.clearLayers(); selLiveLayer.clearLayers(); drawCps(acpLayer, selDone); renderProgress(); drawLive();
+  $('mtitle').textContent = 'Live map: guards on duty'; $('thumbs').innerHTML = '<span class="mut">None.</span>';
   document.querySelectorAll('.item.sel').forEach(e => e.classList.remove('sel'));
   window.scrollTo(0, 0); setTimeout(() => amap.invalidateSize(), 150);
 }
@@ -484,7 +543,7 @@ function select(id, v) {
   sel = id; selStatus = v.status; selDone = {}; selPhotos = {}; selUnsubs.forEach(f => f()); selUnsubs = [];
   $('mtitle').textContent = v.guardName + ' — ' + fmt(v.start);
   document.querySelectorAll('.item').forEach(e => e.classList.remove('sel'));
-  let pts = [], photos = [];
+  let pts = [], photos = [], fitted = false;
   const draw = () => {
     layer.clearLayers();
     $('gvsum').textContent = 'Started ' + fmt(v.start) + (v.end ? '  ·  Ended ' + fmt(v.end) : '') + (pts.length ? '  ·  Last location ' + fmt(pts[pts.length - 1].at) : '');
@@ -493,9 +552,8 @@ function select(id, v) {
       L.polyline(ll, { color: '#1d6fe0', weight: 5 }).addTo(layer);
       L.marker(ll[0], { icon: pin('#1f9d55') }).addTo(layer).bindPopup('Start: ' + fmt(pts[0].at));
       const last = pts[pts.length - 1];
-      L.marker(ll[ll.length - 1], { icon: pin(v.status === 'active' ? '#1d6fe0' : '#d64545') }).addTo(layer)
-        .bindPopup((v.status === 'active' ? 'Latest: ' : 'End: ') + fmt(last.at));
-      amap.fitBounds(ll, { padding: [30, 30], maxZoom: 18 });
+      if (v.status !== 'active') L.marker(ll[ll.length - 1], { icon: pin('#d64545') }).addTo(layer).bindPopup('End: ' + fmt(last.at));
+      if (!fitted) { amap.fitBounds(ll, { padding: [30, 30], maxZoom: 18 }); fitted = true; }
     }
     photos.forEach(p => L.marker([p.lat, p.lng]).addTo(layer).bindPopup(`<div class="pop">${p.checkpointName ? '<b>' + esc(p.checkpointName) + '</b><br>' : ''}<img class="zoomable" src="${p.img}"><br>${fmt(p.at)}${p.stepsLeg != null ? '<br>' + p.stepsLeg + ' steps from ' + esc(p.fromName) : ''}</div>`));
     const extra = photos.filter(p => !p.checkpointId);
@@ -506,7 +564,13 @@ function select(id, v) {
   };
   selUnsubs.push(db.collection('shifts/' + id + '/points').orderBy('at').onSnapshot(s => { pts = s.docs.map(d => d.data()).filter(p => p.at); draw(); }));
   selUnsubs.push(db.collection('shifts/' + id + '/photos').orderBy('at').onSnapshot(s => { photos = s.docs.map(d => d.data()).filter(p => p.at); draw(); }));
+  drawSelLive();
 }
+
+$('fitlive').onclick = () => {
+  const pts = allShifts.filter(x => x.status === 'active' && x.lastLat != null).map(x => [x.lastLat, x.lastLng]);
+  if (pts.length) amap.fitBounds(pts, { padding: [50, 50], maxZoom: 18 }); else toast('No guard on duty has a live location yet.');
+};
 
 /* keep maps correct when the phone/tablet rotates or the window resizes */
 function fixMaps() {
