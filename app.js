@@ -89,6 +89,75 @@ function drawCps(grp, doneMap) {
 const distTo = c => myLL ? L.latLng(myLL).distanceTo([c.lat, c.lng]) : null;
 const isNear = (d, acc, c) => d !== null && d - Math.min(acc, 30) <= c.radius;   // allows for GPS inaccuracy
 
+/* ---------- RESORT AREA (boundary the admin draws; maps are limited to it) ---------- */
+let area = [], areaPolys = {}, drawing = false, drawPts = [], draftLayer = null, wasOut = false, lastOutNote = 0;
+function inArea(lat, lng) {   // point-in-polygon
+  let ins = false;
+  for (let i = 0, j = area.length - 1; i < area.length; j = i++) {
+    const yi = area[i][0], xi = area[i][1], yj = area[j][0], xj = area[j][1];
+    if ((yi > lat) !== (yj > lat) && lng < (xj - xi) * (lat - yi) / (yj - yi) + xi) ins = !ins;
+  }
+  return ins;
+}
+function applyArea(map, key, fit) {
+  if (!map) return;
+  if (areaPolys[key]) { map.removeLayer(areaPolys[key]); areaPolys[key] = null; }
+  if (area.length < 3) { map.setMaxBounds(null); return; }
+  areaPolys[key] = L.polygon(area, { color: '#1d6fe0', weight: 3, dashArray: '8 6', fillColor: '#1d6fe0', fillOpacity: 0.06, interactive: false }).addTo(map);
+  const b = areaPolys[key].getBounds();
+  if (!(drawing && key === 'a')) { map.options.maxBoundsViscosity = 1; map.setMaxBounds(b.pad(0.25)); }
+  if (fit) map.fitBounds(b, { padding: [20, 20] });
+}
+function watchArea(isAdmin) {
+  unsubs.push(db.doc('settings/resort').onSnapshot(sn => {
+    area = sn.exists && sn.data().points ? sn.data().points.map(p => [p.lat, p.lng]) : [];
+    if (isAdmin) {
+      applyArea(amap, 'a', !$('admin').classList.contains('gv'));
+      $('areastat').textContent = area.length >= 3 ? 'Area set (' + area.length + ' corners). Maps are limited to this area.' : 'No area set. The map shows everywhere.';
+    } else { applyArea(gmap, 'g', !myLL); if (myLL) checkOutside(myLL); }
+  }));
+}
+function checkOutside(ll) {
+  const out = area.length >= 3 && !inArea(ll[0], ll[1]);
+  $('areawarn').classList.toggle('hide', !out);
+  if (out && !wasOut && shiftId && Date.now() - lastOutNote > 60000) { lastOutNote = Date.now(); notify('is outside the resort area'); }
+  wasOut = out;
+}
+function redrawDraft() {
+  draftLayer.clearLayers();
+  drawPts.forEach(p => L.circleMarker(p, { radius: 6, color: '#fff', weight: 2, fillColor: '#d64545', fillOpacity: 1, interactive: false }).addTo(draftLayer));
+  if (drawPts.length >= 3) L.polygon(drawPts, { color: '#d64545', weight: 3, fillOpacity: 0.1, interactive: false }).addTo(draftLayer);
+  else if (drawPts.length === 2) L.polyline(drawPts, { color: '#d64545', weight: 3, interactive: false }).addTo(draftLayer);
+  $('areamsg').textContent = drawPts.length + ' corner' + (drawPts.length === 1 ? '' : 's') + ' placed. ' + (drawPts.length < 3 ? 'Add at least 3 corners around the resort.' : 'Tap "Finish and save" when done.');
+}
+const onDrawClick = e => { drawPts.push([e.latlng.lat, e.latlng.lng]); redrawDraft(); };
+function endDraw() {
+  drawing = false; amap.off('click', onDrawClick); amap.getContainer().style.cursor = '';
+  if (draftLayer) draftLayer.clearLayers();
+  $('areabtns').classList.remove('hide'); $('areadrawbtns').classList.add('hide');
+  applyArea(amap, 'a', false);
+}
+$('areadraw').onclick = () => {
+  if (placeHandler) { amap.off('click', placeHandler); placeHandler = null; }
+  drawing = true; drawPts = []; if (!draftLayer) draftLayer = L.layerGroup().addTo(amap);
+  amap.setMaxBounds(null); amap.getContainer().style.cursor = 'crosshair'; amap.on('click', onDrawClick);
+  $('areabtns').classList.add('hide'); $('areadrawbtns').classList.remove('hide');
+  $('amap').scrollIntoView({ behavior: 'smooth', block: 'center' }); redrawDraft();
+};
+$('areaundo').onclick = () => { drawPts.pop(); redrawDraft(); };
+$('areacancel').onclick = () => { endDraw(); $('areamsg').textContent = ''; };
+$('areadone').onclick = async () => {
+  if (drawPts.length < 3) { $('areamsg').textContent = 'Add at least 3 corners first.'; return; }
+  try {
+    await db.doc('settings/resort').set({ points: drawPts.map(p => ({ lat: p[0], lng: p[1] })), updatedAt: ts() });
+    endDraw(); $('areamsg').textContent = 'Resort area saved.';
+  } catch (e) { $('areamsg').textContent = 'Could not save: ' + e.message; }
+};
+$('areaclear').onclick = async () => {
+  if (!confirm('Clear the resort area? Maps will show everywhere again.')) return;
+  try { await db.doc('settings/resort').delete(); $('areamsg').textContent = 'Resort area cleared.'; } catch (e) { $('areamsg').textContent = 'Could not clear: ' + e.message; }
+};
+
 /* ---------- STEP COUNTER (phone motion sensor; GPS distance estimate if no sensor) ---------- */
 const STRIDE_M = 0.75;
 let steps = 0, gpsDist = 0, legSteps0 = 0, legDist0 = 0, lastCpName = 'Start of duty', motionOK = false, motionOn = false, lastStepAt = 0, gBase = 9.8, prevD = 0;
@@ -153,7 +222,7 @@ function showMyLocation() {
   if (meWatch !== null || !navigator.geolocation) return;
   meWatch = navigator.geolocation.watchPosition(p => {
     const ll = [p.coords.latitude, p.coords.longitude];
-    myLL = ll; myAcc = p.coords.accuracy; updateCpDist();
+    myLL = ll; myAcc = p.coords.accuracy; updateCpDist(); checkOutside(ll);
     if (!meDot) {
       meCircle = L.circle(ll, { radius: p.coords.accuracy, color: '#1d6fe0', weight: 1, fillColor: '#1d6fe0', fillOpacity: 0.15 }).addTo(gmap);
       meDot = L.marker(ll, { icon: L.divIcon({ className: '', html: '<div class="me-dot"></div>', iconSize: [18, 18], iconAnchor: [9, 9] }), zIndexOffset: 1000 }).addTo(gmap).bindTooltip('You are here');
@@ -200,6 +269,7 @@ function initGuard() {
   unsubs.push(db.collection('checkpoints').orderBy('order').onSnapshot(sn => {
     cps = sn.docs.map(d => ({ id: d.id, ...d.data() })); renderCpList(); drawCps(gcpLayer, done);
   }));
+  watchArea(false);
   setTimeout(() => gmap.invalidateSize(), 200);
   db.collection('shifts').where('guardId', '==', me.uid).where('status', '==', 'active').limit(1).get().then(s => {
     if (!s.empty) { shiftId = s.docs[0].id; beginTracking(); }
@@ -300,6 +370,7 @@ function initAdmin() {
   unsubs.push(db.collection('checkpoints').orderBy('order').onSnapshot(sn => {
     cps = sn.docs.map(d => ({ id: d.id, ...d.data() })); renderCpAdmin(); drawCps(acpLayer, selDone); renderProgress();
   }));
+  watchArea(true);
   unsubs.push(db.collection('notifications').orderBy('at', 'desc').limit(1).onSnapshot(s => {
     if (!booted) { booted = true; return; }
     s.docChanges().forEach(c => { if (c.type === 'added' && c.doc.data().at) toast(c.doc.data().guard + ' ' + c.doc.data().text); });
@@ -376,6 +447,7 @@ function renderCpAdmin() {
 }
 async function saveCp(lat, lng) {
   const name = $('cpname').value.trim(), radius = Math.max(10, +$('cpradius').value || 30);
+  if (area.length >= 3 && !inArea(lat, lng)) { $('cpmsg').textContent = 'That spot is outside the resort area. Choose a place inside the outline.'; return; }
   await db.collection('checkpoints').add({ name, lat, lng, radius, order: Date.now() });
   $('cpname').value = ''; $('cpmsg').textContent = 'Checkpoint added.';
 }
