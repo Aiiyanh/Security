@@ -28,6 +28,7 @@
 <section id="guard" class="hide">
   <div class="card">
     <h2>My duty</h2>
+    <div id="areawarn" class="warn hide">⚠️ You are outside the resort area. Please return to the patrol area.</div>
     <div id="locwarn" class="warn hide"></div>
     <p id="gstatus" class="mut">You are off duty.</p>
     <p id="stepinfo" class="mut"></p>
@@ -48,6 +49,13 @@
     <div class="leftcol">
       <div class="card"><h2>On duty now</h2><div id="active"><span class="mut">No guards on duty.</span></div></div>
       <div class="card"><h2>Recent shifts</h2><div id="recent"></div></div>
+      <div class="card">
+        <h2>Resort area</h2>
+        <p id="areastat" class="mut">No area set. The map shows everywhere.</p>
+        <div id="areabtns" class="actions"><button id="areadraw" type="button">Draw area on map</button><button id="areaclear" type="button" class="bad">Clear area</button></div>
+        <div id="areadrawbtns" class="actions hide"><button id="areaundo" type="button">Undo last point</button><button id="areadone" type="button" class="ok">Finish and save</button><button id="areacancel" type="button" class="bad">Cancel</button></div>
+        <p id="areamsg" class="mut"></p>
+      </div>
       <div class="card">
         <h2>Checkpoints</h2>
         <input id="cpname" placeholder="Checkpoint name (e.g. Main gate)">
