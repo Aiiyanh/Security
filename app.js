@@ -101,10 +101,20 @@ function inArea(lat, lng) {   // point-in-polygon
 }
 function applyArea(map, key, fit) {
   if (!map) return;
-  if (areaPolys[key]) { map.removeLayer(areaPolys[key]); areaPolys[key] = null; }
-  if (area.length < 3) { map.setMaxBounds(null); return; }
+  [key, key + 'm'].forEach(k => { if (areaPolys[k]) { map.removeLayer(areaPolys[k]); areaPolys[k] = null; } });
+  if (key === 'g') $('maplock').classList.toggle('hide', area.length < 3);
+  if (area.length < 3) { map.setMaxBounds(null); map.setMinZoom(0); return; }
   areaPolys[key] = L.polygon(area, { color: '#1d6fe0', weight: 3, dashArray: '8 6', fillColor: '#1d6fe0', fillOpacity: 0.06, interactive: false }).addTo(map);
   const b = areaPolys[key].getBounds();
+  if (key === 'g') {
+    /* guard map is LOCKED to the area: no panning or zooming out beyond it, outside is dimmed */
+    map.invalidateSize();
+    const gb = b.pad(0.02);
+    map.options.maxBoundsViscosity = 1; map.setMaxBounds(gb);
+    map.setMinZoom(0); map.fitBounds(gb, { animate: false }); map.setMinZoom(map.getZoom());
+    areaPolys.gm = L.polygon([[[-85, -180], [-85, 180], [85, 180], [85, -180]], area], { stroke: false, fillColor: '#000', fillOpacity: 0.35, interactive: false }).addTo(map);
+    return;
+  }
   if (!(drawing && key === 'a')) { map.options.maxBoundsViscosity = 1; map.setMaxBounds(b.pad(0.25)); }
   if (fit) map.fitBounds(b, { padding: [20, 20] });
 }
@@ -499,7 +509,15 @@ function select(id, v) {
 }
 
 /* keep maps correct when the phone/tablet rotates or the window resizes */
-function fixMaps() { setTimeout(() => { if (gmap) gmap.invalidateSize(); if (amap) amap.invalidateSize(); }, 250); }
+function fixMaps() {
+  setTimeout(() => {
+    if (gmap) {
+      gmap.invalidateSize();
+      if (areaPolys.g && area.length >= 3) { gmap.setMinZoom(0); gmap.setMinZoom(gmap.getBoundsZoom(areaPolys.g.getBounds().pad(0.02))); }   // keep the lock correct after rotating
+    }
+    if (amap) amap.invalidateSize();
+  }, 250);
+}
 window.addEventListener('resize', fixMaps);
 window.addEventListener('orientationchange', fixMaps);
 
